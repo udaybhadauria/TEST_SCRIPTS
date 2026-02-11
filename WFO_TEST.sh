@@ -11,14 +11,6 @@ RESTORE_DELAY_DEFAULT=300
 SCRIPT_NAME=$(basename "$0")
 
 ########################################
-# Logging Function
-########################################
-log_msg() {
-    echo "$(date '+%F %T') - $1" >> "$LOG_FILE"
-    sync
-}
-
-########################################
 # Cleanup old logs
 ########################################
 PREFIX1="WFO_${CM_MAC}"
@@ -30,6 +22,16 @@ find /var/tmp -maxdepth 1 -type f \
         log_msg "Removing old log: $f"
         rm -f "$f"
     done
+
+########################################
+# Logging Function
+########################################
+log_msg() {
+    echo "$(date '+%F %T') - $1" >> "$LOG_FILE"
+    sync
+}
+
+echo "WFO_RESULT: $LOG_FILE"
 
 ########################################
 # SAFE DMCLI
@@ -94,7 +96,6 @@ revert_defaults() {
 ########################################
 # Read data
 ########################################
-
 # Read Current Firmware Name
 log_msg "XLE Firmware: $(deviceinfo.sh -fw)"
 
@@ -140,7 +141,7 @@ get_active_interface() {
 verify_failover_conditions() {
     CONTEXT="$1"
     stats="$(date)"
-    log_msg "[$stats] Starting verification for context: $CONTEXT"
+    log_msg "[$stats] Starting Verification for $CONTEXT"
 
     ACTIVE_IF=$(get_active_interface)
     #ACTIVE_IF=$(dmcli eRT getv Device.X_RDK_WanManager.InterfaceActiveStatus | grep value | awk -F 'value:' '{print $2}' | tr '|' '\n' | awk -F',' '$2==1 {print $1}' | xargs)
@@ -260,18 +261,17 @@ verify_failover_conditions() {
         log_msg "XLE Capabilities=$XLE_CAPABILITY"
         log_msg "Gateway Capabilities=$GW_CAPABILITY"
         log_msg "XB_Active=$G1A, XB_Operation=$G1O, XLE_Active=$G2A, XLE_Operation=$G2O"
-        log_msg ">>>>>>>>>>>>>>>>>>>>>>>>> $CONTEXT Completed <<<<<<<<<<<<<<<<<<<<<<<<<"
+        log_msg ">>>>>>>>>>>>>>>>>>>>>>>>> $CONTEXT Check Completed <<<<<<<<<<<<<<<<<<<<<<<<<"
     fi
     
-    log_msg "Available Interface: $(get_available_interfaces | xargs)"
-    log_msg "Active Interface: $(get_active_interface)"
-    log_msg "Default IPv4 Route in $CONTEXT: $(ip route | awk '/^default/ {print $5}')"
-    log_msg "Default IPv6 Route in $CONTEXT: $(ip -6 route | awk '/^default/ {print $5}')"
-    log_msg "CONTEXT=$CONTEXT | Interface=$WAN_ACTIVE | PING4=$PING4 | PING6=$PING6 | DNS4=$DNS4 | DNS6=$DNS6"
+    log_msg "["$CONTEXT"] Available Interface: $(get_available_interfaces | xargs)"
+    log_msg "["$CONTEXT"] Active Interface: $(get_active_interface)"
+    log_msg "["$CONTEXT"] Default IPv4 Route in $CONTEXT: $(ip route | awk '/^default/ {print $5}')"
+    log_msg "["$CONTEXT"] Default IPv6 Route in $CONTEXT: $(ip -6 route | awk '/^default/ {print $5}')"
+    log_msg "["$CONTEXT"] Interface=$WAN_ACTIVE | PING4=$PING4 | PING6=$PING6 | DNS4=$DNS4 | DNS6=$DNS6"
     
     return 0 # Success message
 }
-
 
 ########################################
 #Change Default Values for Testing
@@ -298,9 +298,11 @@ fi
 verify_failover_conditions PRE-WFO
 RESULT=$?
 if [[ $RESULT -eq 0 ]]; then
-    log_msg "XB-XLE setup looks good before WFO"
+    log_msg "XB-XLE setup looks good for WAN Failover Execution"
+    log_mfg "--------------------------------------------------"
 else
     log_msg "XB-XLE setup don't look good before WFO, Aborting the validation"
+    log_msg "----------------------------------------------------------------"
     #exit 1
 fi
 
@@ -310,6 +312,7 @@ fi
 
 WAN_STATE="PRE-WFO"
 WFO_START_TIME=0
+WFO_CHECK="false"
 RESTORE_TIME=0
 FAILOVER_DONE="false"
 RESTORE_DONE="false"
@@ -320,41 +323,86 @@ while true; do
     read AVAILABLE_IF <<< $(get_available_interfaces | awk '/REMOTE_LTE/{print $1}')
     WAN_ACTIVE=$(safe_dmcli "Device.X_RDK_WanManager.CurrentActiveInterface")
     WAN_STANDBY=$(safe_dmcli "Device.X_RDK_WanManager.CurrentStandbyInterface")
+    if [[ "$gw_mode" == "DOCSIS" ]]; then
+        WAN_LINK=$(safe_dmcli "Device.X_RDK_DOCSIS.LinkStatus")
+    else
+        WAN_LINK=$(safe_dmcli "Device.X_RDKCENTRAL-COM_EthernetWAN.LinkStatus")
+    fi
+        
+    # Check WAN erouter0 IPv4/IPv6
+    eIP4=$(ifconfig erouter0 | grep -w "inet addr" | awk -F: '{print $2}' | awk '{print $1}')
+    eIP6=$(ifconfig erouter0 | grep -i "global" | awk -F " " '{print $3}' | awk -F "/" '{print $1}')
 
     ########################################
     # 1. DETECT WAN Interface Down Thread
     ########################################
-    if [[ "$WAN_ACTIVE" == "brRWAN" && "$WAN_STANDBY" == "erouter0" && $WFO_START_TIME -eq 0 ]]; then
+    if [[ "$WAN_LINK" == "false" && -z "$eIP4" && -z "$eIP6" && $WFO_START_TIME -eq 0 ]]; then
         WFO_START_TIME=$(date +%s)
-        
         log_msg "$(date) WAN FAILOVER DETECTED"
         log_msg "WFO_START_TIME=$WFO_START_TIME"
+        FAILOVER_DONE="true"
+        sleep 15
+        if [[ "$WAN_ACTIVE" == "brRWAN" && "$WAN_STANDBY" == "erouter0" ]]; then
+            log_msg "[Debug] WAN Failover State is Correct."
+        else
+            log_msg "[Issue] Incorrect State in WAN Failover. Please check below details."
+            IP4=$(ip -4 addr show "$WAN_ACTIVE" | grep inet | awk '{print $2}')
+            IP6=$(ip -6 addr show "$WAN_ACTIVE" | grep global | awk '{print $2}')
+            ping -I "$WAN_ACTIVE" -c 1 -W 2 "$PING_HOST" >/dev/null 2>&1 && PING4="Pass" || PING4="Fail"
+            ping -6 -I "$WAN_ACTIVE" -c 1 -W 2 "$PING_HOST" >/dev/null 2>&1 && PING6="Pass" || PING6="Fail"
+        
+            DNS4="Fail"
+            DNS6="Fail"
+            NS=$(nslookup "$DNS_HOST" 2>/dev/null)
+            echo "$NS" | grep -qE "([0-9]{1,3}\.){3}[0-9]{1,3}" && DNS4="Pass"
+            echo "$NS" | grep -qE "([0-9a-fA-F]{0,4}:){2,}" && DNS6="Pass"
+            log_msg "[WFO] Default IPv4 Route: $(ip route | awk '/^default/ {print $5}')"
+            log_msg "[WFO] Default IPv6 Route: $(ip -6 route | awk '/^default/ {print $5}')"
+            log_msg "[WFO] Active Interface=$WAN_ACTIVE | PING4=$PING4 | PING6=$PING6 | DNS4=$DNS4 | DNS6=$DNS6"
+        
+            WAN_ACTIVE=$(safe_dmcli "Device.X_RDK_WanManager.CurrentActiveInterface")
+            WAN_STANDBY=$(safe_dmcli "Device.X_RDK_WanManager.CurrentStandbyInterface")
+            log_msg "[WFO] CurrentActiveInterface: $WAN_ACTIVE & CurrentStandbyInterface: $WAN_STANDBY"
+            log_msg "[WFO] Available Interface: $(get_available_interfaces | xargs)"
+            log_msg "[WFO] Active Interface: $(get_active_interface)"
+            Available_Status=$(safe_dmcli "Device.X_RDK_WanManager.InterfaceAvailableStatus")
+            Active_Status=$(safe_dmcli "Device.X_RDK_WanManager.InterfaceActiveStatus")
+            log_msg "[WFO] Available Status: $Available_Status"
+            log_msg "[WFO] Active Status: $Active_Status"
+
+        fi
     fi
 
-    ########################################
-    # 2. WAN FAILOVER SUCCESS
-    ########################################
-    if [[ "$ACTIVE_IF" == "REMOTE_LTE" &&
-          "$WAN_ACTIVE" == "brRWAN" &&
-          "$WAN_STANDBY" == "erouter0" &&
-          "$AVAILABLE_IF" == "REMOTE_LTE" &&
-          "$FAILOVER_DONE" == "false" &&
-          "$RESTORE_DONE" == "false" ]]; then
-        
-        FAILOVER_DONE="true"
-        WAN_STATE="WFO"
+    # Check WAN erouter0 IPv4/IPv6
+    eIP4=$(ifconfig erouter0 | grep -w "inet addr" | awk -F: '{print $2}' | awk '{print $1}')
+    eIP6=$(ifconfig erouter0 | grep -i "global" | awk -F " " '{print $3}' | awk -F "/" '{print $1}')
 
+    ########################################
+    # 2. WAN FAILOVER SUCCESS VALIDATION
+    ########################################
+    if [[ "$WAN_LINK" == "false" && -z "$eIP4" && -z "$eIP6" &&
+          "$FAILOVER_DONE" == "true" &&
+          "$RESTORE_DONE" == "false" && "$WFO_CHECK" == "false" ]]; then     
+        
+        WAN_STATE="WFO"
+        WFO_CHECK="true"
         sleep 20
-                
+        
         # WAN Failover Validation
         verify_failover_conditions "WFO"
-        log_msg "[Info] WAN Failover is Successful."
+        RESULT=$?
+
+        if [[ $RESULT -eq 0 ]]; then  
+            log_msg "[Info] WAN Failover is Successful."
+        else
+            log_msg "[Issue] WAN Failover is NOT Successful. Review Logs for more details."
+        fi
     fi
 
     ########################################
     # 3. DETECT WAN RESTORE
     ########################################
-    if [[ "$ACTIVE_IF" =~ ^(DOCSIS|WANOE)$ &&
+    if [[ "$WAN_LINK" == "true" &&
           "$WAN_ACTIVE" == "erouter0" &&
           "$WAN_STANDBY" == "brRWAN" &&
           $WFO_START_TIME -gt 0 &&
@@ -365,8 +413,9 @@ while true; do
         RESTORE_TIME=$(date +%s)
         WAN_STATE="WAN-RESTORE"
         RESTORE_DONE="true"
-        sleep 20
+        sleep 15
         # WAN Restore Validation
+        
         verify_failover_conditions "WAN-RESTORE"
         RESULT=$?
 
