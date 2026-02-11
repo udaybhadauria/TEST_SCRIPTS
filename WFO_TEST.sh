@@ -16,7 +16,7 @@ SCRIPT_NAME=$(basename "$0")
 PREFIX1="WFO_${CM_MAC}"
 PREFIX2="GFO_${CM_MAC}"
 
-find /var/tmp -maxdepth 1 -type f \
+find /tmp -maxdepth 1 -type f \
     \( -name "${PREFIX1}*" -o -name "${PREFIX2}*" \) \
     | while IFS= read -r f; do
         log_msg "Removing old log: $f"
