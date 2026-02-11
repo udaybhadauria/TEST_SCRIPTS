@@ -11,6 +11,16 @@ RESTORE_DELAY_DEFAULT=300
 SCRIPT_NAME=$(basename "$0")
 
 ########################################
+# Logging Function
+########################################
+log_msg() {
+    echo "$(date '+%F %T') - $1" >> "$LOG_FILE"
+    sync
+}
+
+echo "WFO_RESULT: $LOG_FILE"
+
+########################################
 # Cleanup old logs
 ########################################
 PREFIX1="WFO_${CM_MAC}"
@@ -22,16 +32,6 @@ find /tmp -maxdepth 1 -type f \
         log_msg "Removing old log: $f"
         rm -f "$f"
     done
-
-########################################
-# Logging Function
-########################################
-log_msg() {
-    echo "$(date '+%F %T') - $1" >> "$LOG_FILE"
-    sync
-}
-
-echo "WFO_RESULT: $LOG_FILE"
 
 ########################################
 # SAFE DMCLI
