@@ -299,7 +299,7 @@ verify_failover_conditions PRE-WFO
 RESULT=$?
 if [[ $RESULT -eq 0 ]]; then
     log_msg "XB-XLE setup looks good for WAN Failover Execution"
-    log_mfg "--------------------------------------------------"
+    log_msg "--------------------------------------------------"
 else
     log_msg "XB-XLE setup don't look good before WFO, Aborting the validation"
     log_msg "----------------------------------------------------------------"
